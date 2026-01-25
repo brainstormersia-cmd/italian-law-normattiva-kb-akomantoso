@@ -8,3 +8,5 @@ def test_reference_extraction():
     assert "dlgs:74:2000" in targets
     assert "dpr:917:1986" in targets
     assert "l:212:2000" in targets
+    relations = {ref.get("relation_type") for ref in refs}
+    assert "AMENDS" in relations or "CITES" in relations

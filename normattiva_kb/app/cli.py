@@ -82,16 +82,23 @@ def cmd_parse() -> None:
             if existing_version and existing_version.checksum_text == checksum:
                 raw.status = "parsed"
                 continue
+            if existing_version and existing_version.checksum_text != checksum:
+                raw.status = "conflict"
+                raw.error = "checksum_mismatch_for_version"
+                continue
 
             version_payload = {
                 "doc_id": doc.doc_id,
                 "version_tag": version_tag,
                 "checksum_text": checksum,
                 "source_raw_id": raw.raw_id,
+                "valid_from": doc_info.get("valid_from"),
+                "valid_to": doc_info.get("valid_to"),
                 "metadata_json": {},
             }
             version = repo.upsert_document_version(session, version_payload)
 
+            is_current = version.valid_to is None
             for node in parsed["nodes"]:
                 node_payload = {
                     "node_id": sha256_text(f"{doc.doc_id}:{version.version_id}:{node['canonical_path']}"),
@@ -100,6 +107,7 @@ def cmd_parse() -> None:
                     "node_type": node["node_type"],
                     "label": node["label"],
                     "canonical_path": node["canonical_path"],
+                    "hierarchy_string": node.get("hierarchy_string"),
                     "sort_key": node["sort_key"],
                     "ordinal": None,
                     "heading": node.get("heading"),
@@ -108,6 +116,10 @@ def cmd_parse() -> None:
                     "text_hash": node["text_hash"],
                     "flags_json": {},
                     "metadata_json": node.get("metadata_json", {}),
+                    "valid_from": version.valid_from,
+                    "valid_to": version.valid_to,
+                    "is_current_law": is_current,
+                    "source_url": node.get("source_url"),
                 }
                 repo.upsert_node(session, node_payload)
 

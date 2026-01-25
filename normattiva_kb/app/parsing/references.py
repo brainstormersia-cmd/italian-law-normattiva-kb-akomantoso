@@ -28,6 +28,7 @@ RELATION_PATTERNS = {
     "AMENDS": re.compile(r"modificato da|sostituito da|inserito da", re.IGNORECASE),
     "REPEALS": re.compile(r"abrogato", re.IGNORECASE),
     "DEROGATES": re.compile(r"in deroga a", re.IGNORECASE),
+    "CITES": re.compile(r"ai sensi di|a norma di|ex art", re.IGNORECASE),
 }
 
 

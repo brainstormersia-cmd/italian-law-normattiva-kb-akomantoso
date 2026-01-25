@@ -5,6 +5,8 @@
     <year>2000</year>
     <title>Disciplina tributi</title>
     <version_tag>v1</version_tag>
+    <valid_from>2000-01-01</valid_from>
+    <source_url>https://normattiva.example/dlgs/74/2000</source_url>
   </meta>
   <articolo id="1">
     <rubrica>Oggetto</rubrica>

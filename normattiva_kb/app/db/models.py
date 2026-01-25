@@ -80,6 +80,7 @@ class Node(Base):
     node_type: Mapped[str] = mapped_column(String(32))
     label: Mapped[str] = mapped_column(String(128))
     canonical_path: Mapped[str] = mapped_column(String(256))
+    hierarchy_string: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_key: Mapped[str] = mapped_column(String(256))
     ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     heading: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -87,6 +88,10 @@ class Node(Base):
     text_clean: Mapped[str] = mapped_column(Text)
     text_hash: Mapped[str] = mapped_column(String(64))
     language: Mapped[str] = mapped_column(String(8), default="it")
+    valid_from: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    valid_to: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    is_current_law: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     flags_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

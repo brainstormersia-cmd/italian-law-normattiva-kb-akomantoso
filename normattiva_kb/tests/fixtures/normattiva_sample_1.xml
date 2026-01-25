@@ -5,6 +5,9 @@
     <year>1986</year>
     <title>Testo unico imposte sui redditi</title>
     <version_tag>v1</version_tag>
+    <valid_from>1986-01-01</valid_from>
+    <valid_to></valid_to>
+    <source_url>https://normattiva.example/dpr/917/1986</source_url>
   </meta>
   <preambolo>Visti gli articoli... Considerato che...</preambolo>
   <articolo id="1-bis">
