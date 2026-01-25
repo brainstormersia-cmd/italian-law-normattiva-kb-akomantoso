@@ -1,0 +1,23 @@
+<atto>
+  <meta>
+    <doc_type>dpr</doc_type>
+    <number>917</number>
+    <year>1986</year>
+    <title>Testo unico imposte sui redditi</title>
+    <version_tag>v1</version_tag>
+  </meta>
+  <preambolo>Visti gli articoli... Considerato che...</preambolo>
+  <articolo id="1-bis">
+    <rubrica>Definizioni</rubrica>
+    <testo>Articolo 1-bis testo base.</testo>
+    <comma id="1-bis">Comma 1-bis con riferimento al d.lgs. 74/2000 e alla legge 212/2000.
+      <lettera id="a">Lettera a) con rinvio al DPR 917/1986.
+        <numero id="1">Numero 1) dettaglio.</numero>
+      </lettera>
+    </comma>
+  </articolo>
+  <allegato id="A">
+    <tabella id="1">Col1 | Col2
+Val1 | Val2</tabella>
+  </allegato>
+</atto>
