@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: normattiva
+      POSTGRES_USER: normattiva
+      POSTGRES_PASSWORD: normattiva
+    ports:
+      - "5432:5432"
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://normattiva:normattiva@db:5432/normattiva
+      INPUT_DIR: /data
+    volumes:
+      - ./:/app
+    depends_on:
+      - db
+    command: ["bash", "-lc", "alembic upgrade head && python -m app.cli serve"]

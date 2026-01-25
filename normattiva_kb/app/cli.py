@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+from pathlib import Path
+import structlog
+import uvicorn
+
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.db.session import SessionLocal
+from app.db import repo, models
+from app.ingestion.scanner import scan_inputs
+from app.ingestion.zip_cache import extract_zip_to_cache
+from app.ingestion.raw_store import raw_file_record
+from app.ingestion.normattiva_reader import read_xml
+from app.parsing.normattiva_parser import parse_normattiva
+from app.parsing.quality import quality_metrics
+from app.parsing.references import extract_references
+from app.parsing.canonicalize import canonical_node
+from app.core.utils_ids import sha256_text
+from app.api.main import app as fastapi_app
+
+logger = structlog.get_logger()
+
+
+def cmd_ingest(input_dir: str) -> None:
+    with SessionLocal() as session:
+        run = models.IngestionRun(input_dir=input_dir, status="running")
+        session.add(run)
+        session.flush()
+
+        files = scan_inputs(input_dir)
+        stats = {"files": len(files), "xml": 0, "zip": 0}
+
+        for path in files:
+            if path.suffix.lower() == ".zip":
+                stats["zip"] += 1
+                cache_dir = Path(get_settings().cache_dir)
+                extracted = extract_zip_to_cache(path, cache_dir)
+                raw = repo.upsert_raw_file(session, raw_file_record(path))
+                for xml_path in extracted:
+                    data = raw_file_record(xml_path, derived_from=raw.raw_id, is_from_zip=True)
+                    repo.upsert_raw_file(session, data)
+            else:
+                stats["xml"] += 1
+                repo.upsert_raw_file(session, raw_file_record(path))
+
+        run.status = "finished"
+        run.finished_at = dt.datetime.utcnow()
+        run.stats_json = stats
+        session.commit()
+        logger.info("ingest_complete", stats=stats)
+
+
+def cmd_parse() -> None:
+    with SessionLocal() as session:
+        raw_files = session.query(models.RawFile).filter(models.RawFile.status == "new").all()
+        for raw in raw_files:
+            tree = read_xml(Path(raw.original_path))
+            parsed = parse_normattiva(tree)
+            doc_info = parsed["doc"]
+            doc_id = sha256_text(doc_info["canonical_doc"])
+            doc_payload = {
+                "doc_id": doc_id,
+                "canonical_doc": doc_info["canonical_doc"],
+                "doc_type": doc_info["doc_type"],
+                "number": doc_info["number"],
+                "year": doc_info["year"],
+                "title": doc_info["title"],
+                "last_seen_raw_id": raw.raw_id,
+            }
+            doc = repo.upsert_document(session, doc_payload)
+
+            version_tag = tree.getroot().findtext("meta/version_tag") or f"import:{raw.raw_id}"
+            text_concat = "\n".join(node["text_raw"] for node in parsed["nodes"])
+            checksum = sha256_text(text_concat)
+            existing_version = session.query(models.DocumentVersion).filter(
+                models.DocumentVersion.doc_id == doc.doc_id,
+                models.DocumentVersion.version_tag == version_tag,
+            ).first()
+            if existing_version and existing_version.checksum_text == checksum:
+                raw.status = "parsed"
+                continue
+
+            version_payload = {
+                "doc_id": doc.doc_id,
+                "version_tag": version_tag,
+                "checksum_text": checksum,
+                "source_raw_id": raw.raw_id,
+                "metadata_json": {},
+            }
+            version = repo.upsert_document_version(session, version_payload)
+
+            for node in parsed["nodes"]:
+                node_payload = {
+                    "node_id": sha256_text(f"{doc.doc_id}:{version.version_id}:{node['canonical_path']}"),
+                    "doc_id": doc.doc_id,
+                    "version_id": version.version_id,
+                    "node_type": node["node_type"],
+                    "label": node["label"],
+                    "canonical_path": node["canonical_path"],
+                    "sort_key": node["sort_key"],
+                    "ordinal": None,
+                    "heading": node.get("heading"),
+                    "text_raw": node["text_raw"],
+                    "text_clean": node["text_clean"],
+                    "text_hash": node["text_hash"],
+                    "flags_json": {},
+                    "metadata_json": node.get("metadata_json", {}),
+                }
+                repo.upsert_node(session, node_payload)
+
+            raw.status = "parsed"
+
+        session.commit()
+        logger.info("parse_complete", count=len(raw_files))
+
+
+def cmd_build_fts() -> None:
+    with SessionLocal() as session:
+        session.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_text_clean ON nodes USING GIN (to_tsvector('italian', text_clean));"
+        )
+        session.commit()
+        logger.info("fts_ready")
+
+
+def cmd_extract_references() -> None:
+    with SessionLocal() as session:
+        nodes = session.query(models.Node).all()
+        for node in nodes:
+            refs = extract_references(node.text_clean)
+            for ref in refs:
+                existing = session.query(models.ReferenceExtracted).filter(
+                    models.ReferenceExtracted.source_node_id == node.node_id,
+                    models.ReferenceExtracted.match_text == ref.get("match_text", ""),
+                ).first()
+                if existing:
+                    continue
+                target_doc = ref.get("target_canonical_doc")
+                target_node = None
+                if target_doc and ref.get("target_article"):
+                    target_node = canonical_node(
+                        target_doc,
+                        ref.get("target_article"),
+                        ref.get("target_comma"),
+                        ref.get("target_letter"),
+                        ref.get("target_number"),
+                    )
+                extracted = models.ReferenceExtracted(
+                    source_node_id=node.node_id,
+                    raw_snippet=ref.get("raw_snippet", node.text_clean[:400]),
+                    match_text=ref.get("match_text", ""),
+                    relation_type=ref.get("relation_type", "CITES"),
+                    target_canonical_doc=target_doc,
+                    target_article=ref.get("target_article"),
+                    target_comma=ref.get("target_comma"),
+                    target_letter=ref.get("target_letter"),
+                    target_number=ref.get("target_number"),
+                    target_canonical_node=target_node,
+                    confidence=ref.get("confidence", 0.4),
+                    method=ref.get("method", "regex:v1"),
+                )
+                session.add(extracted)
+        session.commit()
+        logger.info("references_extracted")
+
+
+def cmd_resolve_references() -> None:
+    with SessionLocal() as session:
+        refs = session.query(models.ReferenceExtracted).all()
+        for ref in refs:
+            target_node_id = None
+            if ref.target_canonical_node:
+                target_node = session.query(models.Node).filter(
+                    models.Node.canonical_path == ref.target_canonical_node.split("#")[-1]
+                ).first()
+                if target_node:
+                    target_node_id = target_node.node_id
+            resolved = models.ReferenceResolved(
+                source_node_id=ref.source_node_id,
+                target_node_id=target_node_id,
+                target_canonical_node=ref.target_canonical_node or "",
+                relation_type=ref.relation_type,
+                confidence=ref.confidence,
+            )
+            session.merge(resolved)
+        session.commit()
+        logger.info("references_resolved")
+
+
+def cmd_stats() -> None:
+    with SessionLocal() as session:
+        nodes = session.query(models.Node).all()
+        metrics = quality_metrics([{"node_type": n.node_type, "text_clean": n.text_clean} for n in nodes])
+        logger.info("stats", metrics=metrics)
+
+
+def cmd_serve() -> None:
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Normattiva KB CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
+    ingest = sub.add_parser("ingest")
+    ingest.add_argument("--dir", required=True)
+    sub.add_parser("parse")
+    sub.add_parser("build-fts")
+    sub.add_parser("extract-references")
+    sub.add_parser("resolve-references")
+    sub.add_parser("stats")
+    sub.add_parser("serve")
+    return parser
+
+
+def main() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.command == "ingest":
+        cmd_ingest(args.dir)
+    elif args.command == "parse":
+        cmd_parse()
+    elif args.command == "build-fts":
+        cmd_build_fts()
+    elif args.command == "extract-references":
+        cmd_extract_references()
+    elif args.command == "resolve-references":
+        cmd_resolve_references()
+    elif args.command == "stats":
+        cmd_stats()
+    elif args.command == "serve":
+        cmd_serve()
+
+
+if __name__ == "__main__":
+    main()

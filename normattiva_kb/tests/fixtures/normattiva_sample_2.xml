@@ -1,0 +1,14 @@
+<atto>
+  <meta>
+    <doc_type>dlgs</doc_type>
+    <number>74</number>
+    <year>2000</year>
+    <title>Disciplina tributi</title>
+    <version_tag>v1</version_tag>
+  </meta>
+  <articolo id="1">
+    <rubrica>Oggetto</rubrica>
+    <testo>Articolo unico.</testo>
+    <comma id="1">Comma 1 con riferimento al d.P.R. 917/1986.</comma>
+  </articolo>
+</atto>
