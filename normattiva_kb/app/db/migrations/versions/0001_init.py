@@ -126,9 +126,21 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["source_node_id"], ["nodes.node_id"]),
         sa.ForeignKeyConstraint(["target_node_id"], ["nodes.node_id"]),
     )
+    op.create_table(
+        "urn_resolution_log",
+        sa.Column("log_id", sa.Integer(), primary_key=True),
+        sa.Column("original_text", sa.Text(), nullable=False),
+        sa.Column("resolved_urn", sa.Text(), nullable=True),
+        sa.Column("confidence_score", sa.Float(), nullable=False),
+        sa.Column("resolution_method", sa.String(length=32), nullable=False),
+        sa.Column("document_id", sa.String(length=64), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.ForeignKeyConstraint(["document_id"], ["documents.doc_id"]),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("urn_resolution_log")
     op.drop_table("references_resolved")
     op.drop_index("ix_refs_target_node", table_name="references_extracted")
     op.drop_index("ix_refs_target_doc", table_name="references_extracted")

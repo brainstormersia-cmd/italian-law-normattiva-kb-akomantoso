@@ -123,3 +123,44 @@ class ReferenceResolved(Base):
     target_canonical_node: Mapped[str] = mapped_column(String(256), primary_key=True)
     relation_type: Mapped[str] = mapped_column(String(32), primary_key=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class UrnResolutionLog(Base):
+    __tablename__ = "urn_resolution_log"
+    log_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    original_text: Mapped[str] = mapped_column(Text)
+    resolved_urn: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    resolution_method: Mapped[str] = mapped_column(String(32))
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.doc_id"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class ConflictEvent(Base):
+    __tablename__ = "conflict_events"
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    doc_id: Mapped[str] = mapped_column(ForeignKey("documents.doc_id"))
+    canonical_path: Mapped[str] = mapped_column(String(256))
+    node_id_a: Mapped[str] = mapped_column(ForeignKey("nodes.node_id"))
+    node_id_b: Mapped[str] = mapped_column(ForeignKey("nodes.node_id"))
+    version_id_a: Mapped[int] = mapped_column(ForeignKey("document_versions.version_id"))
+    version_id_b: Mapped[int] = mapped_column(ForeignKey("document_versions.version_id"))
+    valid_from_a: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    valid_to_a: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    valid_from_b: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    valid_to_b: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), default="warning")
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+
+class DocumentVersionDelta(Base):
+    __tablename__ = "document_version_deltas"
+    delta_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    doc_id: Mapped[str] = mapped_column(ForeignKey("documents.doc_id"))
+    version_id: Mapped[int] = mapped_column(ForeignKey("document_versions.version_id"))
+    base_version_id: Mapped[int | None] = mapped_column(ForeignKey("document_versions.version_id"), nullable=True)
+    delta_text: Mapped[str] = mapped_column(Text)
+    compression_ratio: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)

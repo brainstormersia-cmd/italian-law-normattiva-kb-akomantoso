@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -13,8 +15,32 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health():
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)):
+    db_ok = True
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db_ok = False
+
+    last_ingest = (
+        db.execute(select(models.IngestionRun).order_by(models.IngestionRun.finished_at.desc()))
+        .scalars()
+        .first()
+    )
+    pending = db.execute(select(models.RawFile).where(models.RawFile.status == "new")).scalars().all()
+    since = dt.datetime.utcnow() - dt.timedelta(hours=24)
+    recent = db.execute(select(models.RawFile).where(models.RawFile.discovered_at >= since)).scalars().all()
+    recent_total = len(recent)
+    recent_errors = len([raw for raw in recent if raw.status == "error"])
+    error_rate = (recent_errors / recent_total) if recent_total else 0.0
+
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db_ok": db_ok,
+        "last_ingest_finished_at": last_ingest.finished_at.isoformat() if last_ingest and last_ingest.finished_at else None,
+        "pending_raw_files": len(pending),
+        "error_rate_24h": error_rate,
+    }
 
 
 @router.get("/docs", response_model=list[DocumentOut])

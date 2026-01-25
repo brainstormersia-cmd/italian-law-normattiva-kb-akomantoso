@@ -20,17 +20,13 @@ class ProcessingConfig:
     target_chunk_tokens: int = 800
     max_chunk_tokens: int = 1500
     min_chunk_tokens: int = 50
-    overlap_ratio: float = 0.25
     _VALID_TOKEN_RANGE: ClassVar[tuple[int, int]] = (10, 5000)
-    _VALID_OVERLAP_RANGE: ClassVar[tuple[float, float]] = (0.0, 0.5)
 
     def __post_init__(self) -> None:
         if not (self._VALID_TOKEN_RANGE[0] <= self.min_chunk_tokens <= self._VALID_TOKEN_RANGE[1]):
             raise ValueError(f"min_chunk_tokens deve essere tra {self._VALID_TOKEN_RANGE}")
         if not (self.min_chunk_tokens < self.target_chunk_tokens < self.max_chunk_tokens):
             raise ValueError("Deve valere: min < target < max tokens")
-        if not (self._VALID_OVERLAP_RANGE[0] <= self.overlap_ratio <= self._VALID_OVERLAP_RANGE[1]):
-            raise ValueError(f"overlap_ratio deve essere tra {self._VALID_OVERLAP_RANGE}")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "ProcessingConfig":
@@ -88,7 +84,6 @@ class Config:
                 "target_chunk_tokens": 800,
                 "max_chunk_tokens": 1500,
                 "min_chunk_tokens": 50,
-                "overlap_ratio": 0.25,
             },
             "summarization": {"strategy": "keyword"},
             "cache": {"enabled": False, "directory": ".cache/normativa"},

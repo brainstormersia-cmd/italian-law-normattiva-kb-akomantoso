@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from pathlib import Path
-import structlog
+from loguru import logger
 import uvicorn
 
 from app.core.config import get_settings
@@ -14,14 +14,15 @@ from app.ingestion.scanner import scan_inputs
 from app.ingestion.zip_cache import extract_zip_to_cache
 from app.ingestion.raw_store import raw_file_record
 from app.ingestion.normattiva_reader import read_xml
-from app.parsing.normattiva_parser import parse_normattiva
+from app.parsing.normattiva_parser import parse_normattiva, parse_normattiva_iter
 from app.parsing.quality import quality_metrics
 from app.parsing.references import extract_references
+from app.parsing.urn_resolver import UrnResolver
 from app.parsing.canonicalize import canonical_node
 from app.core.utils_ids import sha256_text
+from app.analysis.conflict_detector import detect_temporal_conflicts, ConflictCandidate
 from app.api.main import app as fastapi_app
 
-logger = structlog.get_logger()
 
 
 def cmd_ingest(input_dir: str) -> None:
@@ -54,77 +55,95 @@ def cmd_ingest(input_dir: str) -> None:
 
 
 def cmd_parse() -> None:
+    import sys
+
+    sys.setrecursionlimit(5000)
     with SessionLocal() as session:
         raw_files = session.query(models.RawFile).filter(models.RawFile.status == "new").all()
         for raw in raw_files:
-            tree = read_xml(Path(raw.original_path))
-            parsed = parse_normattiva(tree)
-            doc_info = parsed["doc"]
-            doc_id = sha256_text(doc_info["canonical_doc"])
-            doc_payload = {
-                "doc_id": doc_id,
-                "canonical_doc": doc_info["canonical_doc"],
-                "doc_type": doc_info["doc_type"],
-                "number": doc_info["number"],
-                "year": doc_info["year"],
-                "title": doc_info["title"],
-                "last_seen_raw_id": raw.raw_id,
-            }
-            doc = repo.upsert_document(session, doc_payload)
+            try:
+                with session.begin():
+                    path = Path(raw.original_path)
+                    if path.stat().st_size > 50_000_000:
+                        parsed = parse_normattiva_iter(path)
+                        tree = None
+                    else:
+                        tree = read_xml(path)
+                        parsed = parse_normattiva(tree)
+                    doc_info = parsed["doc"]
+                    doc_id = sha256_text(doc_info["canonical_doc"])
+                    doc_payload = {
+                        "doc_id": doc_id,
+                        "canonical_doc": doc_info["canonical_doc"],
+                        "doc_type": doc_info["doc_type"],
+                        "number": doc_info["number"],
+                        "year": doc_info["year"],
+                        "title": doc_info["title"],
+                        "last_seen_raw_id": raw.raw_id,
+                    }
+                    doc = repo.upsert_document(session, doc_payload)
 
-            version_tag = tree.getroot().findtext("meta/version_tag") or f"import:{raw.raw_id}"
-            text_concat = "\n".join(node["text_raw"] for node in parsed["nodes"])
-            checksum = sha256_text(text_concat)
-            existing_version = session.query(models.DocumentVersion).filter(
-                models.DocumentVersion.doc_id == doc.doc_id,
-                models.DocumentVersion.version_tag == version_tag,
-            ).first()
-            if existing_version and existing_version.checksum_text == checksum:
-                raw.status = "parsed"
-                continue
-            if existing_version and existing_version.checksum_text != checksum:
-                raw.status = "conflict"
-                raw.error = "checksum_mismatch_for_version"
-                continue
+                    version_tag = doc_info.get("version_tag") or f"import:{raw.raw_id}"
+                    text_concat = "\n".join(node["text_raw"] for node in parsed["nodes"])
+                    checksum = sha256_text(text_concat)
+                    existing_version = session.query(models.DocumentVersion).filter(
+                        models.DocumentVersion.doc_id == doc.doc_id,
+                        models.DocumentVersion.version_tag == version_tag,
+                    ).first()
+                    if existing_version and existing_version.checksum_text == checksum:
+                        raw.status = "parsed"
+                        continue
+                    if existing_version and existing_version.checksum_text != checksum:
+                        raw.status = "conflict"
+                        raw.error = "checksum_mismatch_for_version"
+                        continue
 
-            version_payload = {
-                "doc_id": doc.doc_id,
-                "version_tag": version_tag,
-                "checksum_text": checksum,
-                "source_raw_id": raw.raw_id,
-                "valid_from": doc_info.get("valid_from"),
-                "valid_to": doc_info.get("valid_to"),
-                "metadata_json": {},
-            }
-            version = repo.upsert_document_version(session, version_payload)
+                    version_payload = {
+                        "doc_id": doc.doc_id,
+                        "version_tag": version_tag,
+                        "checksum_text": checksum,
+                        "source_raw_id": raw.raw_id,
+                        "valid_from": doc_info.get("valid_from"),
+                        "valid_to": doc_info.get("valid_to"),
+                        "metadata_json": {},
+                    }
+                    version = repo.upsert_document_version(session, version_payload)
 
-            is_current = version.valid_to is None
-            for node in parsed["nodes"]:
-                node_payload = {
-                    "node_id": sha256_text(f"{doc.doc_id}:{version.version_id}:{node['canonical_path']}"),
-                    "doc_id": doc.doc_id,
-                    "version_id": version.version_id,
-                    "node_type": node["node_type"],
-                    "label": node["label"],
-                    "canonical_path": node["canonical_path"],
-                    "hierarchy_string": node.get("hierarchy_string"),
-                    "sort_key": node["sort_key"],
-                    "ordinal": None,
-                    "heading": node.get("heading"),
-                    "text_raw": node["text_raw"],
-                    "text_clean": node["text_clean"],
-                    "text_hash": node["text_hash"],
-                    "flags_json": {},
-                    "metadata_json": node.get("metadata_json", {}),
-                    "valid_from": version.valid_from,
-                    "valid_to": version.valid_to,
-                    "is_current_law": is_current,
-                    "source_url": node.get("source_url"),
-                }
-                repo.upsert_node(session, node_payload)
+                    is_current = version.valid_to is None
+                    buffer: list[models.Node] = []
+                    for node in parsed["nodes"]:
+                        node_payload = {
+                            "node_id": sha256_text(f"{doc.doc_id}:{version.version_id}:{node['canonical_path']}"),
+                            "doc_id": doc.doc_id,
+                            "version_id": version.version_id,
+                            "node_type": node["node_type"],
+                            "label": node["label"],
+                            "canonical_path": node["canonical_path"],
+                            "hierarchy_string": node.get("hierarchy_string"),
+                            "sort_key": node["sort_key"],
+                            "ordinal": None,
+                            "heading": node.get("heading"),
+                            "text_raw": node["text_raw"],
+                            "text_clean": node["text_clean"],
+                            "text_hash": node["text_hash"],
+                            "flags_json": {},
+                            "metadata_json": node.get("metadata_json", {}),
+                            "valid_from": version.valid_from,
+                            "valid_to": version.valid_to,
+                            "is_current_law": is_current,
+                            "source_url": node.get("source_url"),
+                        }
+                        buffer.append(models.Node(**node_payload))
+                        if len(buffer) >= 2000:
+                            session.bulk_save_objects(buffer)
+                            buffer.clear()
+                    if buffer:
+                        session.bulk_save_objects(buffer)
 
-            raw.status = "parsed"
-
+                    raw.status = "parsed"
+            except Exception as exc:
+                raw.status = "error"
+                raw.error = str(exc)
         session.commit()
         logger.info("parse_complete", count=len(raw_files))
 
@@ -142,6 +161,8 @@ def cmd_extract_references() -> None:
     with SessionLocal() as session:
         nodes = session.query(models.Node).all()
         for node in nodes:
+            doc = session.get(models.Document, node.doc_id)
+            resolver = UrnResolver(doc.canonical_doc if doc else None)
             refs = extract_references(node.text_clean)
             for ref in refs:
                 existing = session.query(models.ReferenceExtracted).filter(
@@ -160,12 +181,25 @@ def cmd_extract_references() -> None:
                         ref.get("target_letter"),
                         ref.get("target_number"),
                     )
+                resolved_urn, confidence_score, method = resolver.resolve(
+                    ref.get("match_text", ""),
+                    ref.get("raw_snippet", ""),
+                )
+                session.add(
+                    models.UrnResolutionLog(
+                        original_text=ref.get("match_text", ""),
+                        resolved_urn=resolved_urn,
+                        confidence_score=confidence_score,
+                        resolution_method=method,
+                        document_id=node.doc_id,
+                    )
+                )
                 extracted = models.ReferenceExtracted(
                     source_node_id=node.node_id,
                     raw_snippet=ref.get("raw_snippet", node.text_clean[:400]),
                     match_text=ref.get("match_text", ""),
                     relation_type=ref.get("relation_type", "CITES"),
-                    target_canonical_doc=target_doc,
+                    target_canonical_doc=target_doc or resolved_urn,
                     target_article=ref.get("target_article"),
                     target_comma=ref.get("target_comma"),
                     target_letter=ref.get("target_letter"),
@@ -209,6 +243,66 @@ def cmd_stats() -> None:
         logger.info("stats", metrics=metrics)
 
 
+def cmd_detect_conflicts() -> None:
+    with SessionLocal() as session:
+        nodes = (
+            session.query(models.Node)
+            .order_by(models.Node.doc_id, models.Node.canonical_path, models.Node.valid_from)
+            .yield_per(1000)
+        )
+        candidates = detect_temporal_conflicts(nodes)
+        created = 0
+        for candidate in candidates:
+            normalized = _normalize_candidate(candidate)
+            existing = (
+                session.query(models.ConflictEvent)
+                .filter(
+                    models.ConflictEvent.node_id_a == normalized.node_id_a,
+                    models.ConflictEvent.node_id_b == normalized.node_id_b,
+                )
+                .first()
+            )
+            if existing:
+                continue
+            session.add(
+                models.ConflictEvent(
+                    doc_id=normalized.doc_id,
+                    canonical_path=normalized.canonical_path,
+                    node_id_a=normalized.node_id_a,
+                    node_id_b=normalized.node_id_b,
+                    version_id_a=normalized.version_id_a,
+                    version_id_b=normalized.version_id_b,
+                    valid_from_a=normalized.valid_from_a,
+                    valid_to_a=normalized.valid_to_a,
+                    valid_from_b=normalized.valid_from_b,
+                    valid_to_b=normalized.valid_to_b,
+                    severity=normalized.severity,
+                    status="pending",
+                )
+            )
+            created += 1
+        session.commit()
+        logger.info("conflicts_detected", created=created)
+
+
+def _normalize_candidate(candidate: ConflictCandidate) -> ConflictCandidate:
+    if candidate.node_id_a <= candidate.node_id_b:
+        return candidate
+    return ConflictCandidate(
+        doc_id=candidate.doc_id,
+        canonical_path=candidate.canonical_path,
+        node_id_a=candidate.node_id_b,
+        node_id_b=candidate.node_id_a,
+        version_id_a=candidate.version_id_b,
+        version_id_b=candidate.version_id_a,
+        valid_from_a=candidate.valid_from_b,
+        valid_to_a=candidate.valid_to_b,
+        valid_from_b=candidate.valid_from_a,
+        valid_to_b=candidate.valid_to_a,
+        severity=candidate.severity,
+    )
+
+
 def cmd_serve() -> None:
     uvicorn.run(fastapi_app, host="0.0.0.0", port=8000)
 
@@ -223,6 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("extract-references")
     sub.add_parser("resolve-references")
     sub.add_parser("stats")
+    sub.add_parser("detect-conflicts")
     sub.add_parser("serve")
     return parser
 
@@ -244,6 +339,8 @@ def main() -> None:
         cmd_resolve_references()
     elif args.command == "stats":
         cmd_stats()
+    elif args.command == "detect-conflicts":
+        cmd_detect_conflicts()
     elif args.command == "serve":
         cmd_serve()
 

@@ -3,16 +3,11 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from normativa_processor.chunking.overlap import add_overlap
 from normativa_processor.chunking.tokenizer import estimate_tokens_accurate
 from normativa_processor.core.config import ProcessingConfig
 from normativa_processor.core.models import ArticleSection
-from normativa_processor.parsing.hierarchy_parser import extract_subsection_label, split_by_subsections
-from normativa_processor.parsing.reference_parser import extract_cross_references, extract_references
 from normativa_processor.parsing.metadata_parser import extract_dates
 from normativa_processor.rag.fields_builder import build_rag_fields
-from normativa_processor.rag.summarizer import summarize_advanced
-from normativa_processor.rag.tagger import extract_tags
 
 
 def build_chunk_id(doc_slug: str, article_id: str, index: int) -> str:
@@ -54,6 +49,11 @@ def split_long_chunk(chunk: str, target_tokens: int) -> list[str]:
     return parts
 
 
+def split_by_paragraphs(text: str) -> list[str]:
+    parts = [part.strip() for part in text.split("\n\n") if part.strip()]
+    return parts or [text.strip()]
+
+
 def extract_effective_date(text: str) -> Optional[str]:
     lowered = text.lower()
     phrases = [
@@ -72,20 +72,6 @@ def extract_effective_date(text: str) -> Optional[str]:
     return None
 
 
-def prepend_context(section: ArticleSection, chunk: str, citation_key: str) -> str:
-    hierarchy_text = " > ".join(section.hierarchy) if section.hierarchy else ""
-    reform = ", ".join(extract_references(chunk)) or "nessuno"
-    cross_refs = extract_cross_references(chunk)
-    cross_text = ", ".join(f"{ref['ref_type']}: {ref['target']}" for ref in cross_refs) or "nessuno"
-    effective_date = extract_effective_date(chunk) or "null"
-    header = (
-        f"Citazione normativa: {citation_key} - Titolo sezione: {section.section_title} - "
-        f"Gerarchia: {hierarchy_text} - Riferimenti: {reform} - "
-        f"Rinvii: {cross_text} - Data vigore: {effective_date}\n[Testo:] "
-    )
-    return f"{header}{chunk}".strip()
-
-
 def split_into_chunks(
     section: ArticleSection,
     doc_slug: str,
@@ -94,7 +80,7 @@ def split_into_chunks(
     summary_strategy: str,
 ) -> list[dict]:
     text = section.text
-    units = split_by_subsections(text)
+    units = split_by_paragraphs(text)
     chunks: list[str] = []
     current = ""
     for unit in units:
@@ -118,24 +104,18 @@ def split_into_chunks(
 
     final_chunks: list[dict] = []
     for idx, chunk in enumerate(normalized_chunks, start=1):
-        chunk_text = add_overlap(normalized_chunks, idx - 1, config.overlap_ratio)
-        subsection = extract_subsection_label(chunk_text)
-        citation_key = build_citation_key(section, context, subsection)
-        chunk_text = prepend_context(section, chunk_text, citation_key)
-        reform_refs = extract_references(chunk_text)
-        cross_refs = extract_cross_references(chunk_text)
-        tags = extract_tags(chunk_text, context.get("nlp"))
-        summary_50 = summarize_advanced(chunk_text, citation_key, 50, tags, summary_strategy)
-        summary_150 = summarize_advanced(chunk_text, citation_key, 150, tags, summary_strategy)
+        chunk_text = chunk
+        citation_key = build_citation_key(section, context, None)
+        reform_refs: list[str] = []
+        cross_refs: list[dict] = []
+        tags: list[str] = []
+        summary_50 = ""
+        summary_150 = ""
         token_est = estimate_tokens_accurate(chunk_text)
         rag_fields = build_rag_fields(
             citation_key,
-            tags,
-            summary_50,
-            summary_150,
             context,
-            reform_refs,
-            cross_refs,
+            section.hierarchy,
             extract_effective_date(chunk_text),
         )
 

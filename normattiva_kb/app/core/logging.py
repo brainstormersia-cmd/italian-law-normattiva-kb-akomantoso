@@ -1,14 +1,12 @@
-import logging
-import structlog
+from __future__ import annotations
+
+from loguru import logger
 
 
 def configure_logging(level: str = "INFO") -> None:
-    logging.basicConfig(level=level)
-    structlog.configure(
-        processors=[
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.add_log_level,
-            structlog.processors.JSONRenderer(),
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
+    logger.remove()
+    logger.add(
+        sink=lambda msg: print(msg, end=""),
+        level=level,
+        serialize=True,
     )

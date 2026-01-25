@@ -9,6 +9,3 @@ def test_processing_config_validation():
 
     with pytest.raises(ValueError):
         ProcessingConfig(min_chunk_tokens=5)
-
-    with pytest.raises(ValueError):
-        ProcessingConfig(overlap_ratio=0.9)
