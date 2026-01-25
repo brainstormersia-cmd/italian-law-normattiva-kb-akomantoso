@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from pathlib import Path
+import re
 from loguru import logger
+from sqlalchemy import text
 import uvicorn
+from lxml import etree
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -15,11 +18,15 @@ from app.ingestion.zip_cache import extract_zip_to_cache
 from app.ingestion.raw_store import raw_file_record
 from app.ingestion.normattiva_reader import read_xml
 from app.parsing.normattiva_parser import parse_normattiva, parse_normattiva_iter
+from app.parsing.akoma_parser import AkomaNtosoParser
+from app.parsing.akoma_models import DocumentOut
 from app.parsing.quality import quality_metrics
 from app.parsing.references import extract_references
 from app.parsing.urn_resolver import UrnResolver
 from app.parsing.canonicalize import canonical_node
-from app.core.utils_ids import sha256_text
+from app.parsing.hierarchy_builder import build_sort_key
+from app.parsing.node_text import clean_text
+from app.core.utils_ids import canonical_doc_id, sha256_text
 from app.analysis.conflict_detector import detect_temporal_conflicts, ConflictCandidate
 from app.api.main import app as fastapi_app
 
@@ -64,12 +71,26 @@ def cmd_parse() -> None:
             try:
                 with session.begin():
                     path = Path(raw.original_path)
-                    if path.stat().st_size > 50_000_000:
-                        parsed = parse_normattiva_iter(path)
-                        tree = None
+                    size = path.stat().st_size
+                    if size > 50_000_000:
+                        root_tag = _detect_root_tag(path)
+                        is_akoma = "akoma" in root_tag
+                        if is_akoma:
+                            parser = AkomaNtosoParser()
+                            akoma_doc = parser.parse_iter(str(path))
+                            parsed = _map_akoma_output(akoma_doc)
+                        else:
+                            parsed = parse_normattiva_iter(path)
                     else:
                         tree = read_xml(path)
-                        parsed = parse_normattiva(tree)
+                        root_tag = tree.getroot().tag.lower()
+                        is_akoma = "akoma" in root_tag
+                        if is_akoma:
+                            parser = AkomaNtosoParser()
+                            akoma_doc = parser.parse(tree)
+                            parsed = _map_akoma_output(akoma_doc)
+                        else:
+                            parsed = parse_normattiva(tree)
                     doc_info = parsed["doc"]
                     doc_id = sha256_text(doc_info["canonical_doc"])
                     doc_payload = {
@@ -151,7 +172,7 @@ def cmd_parse() -> None:
 def cmd_build_fts() -> None:
     with SessionLocal() as session:
         session.execute(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_text_clean ON nodes USING GIN (to_tsvector('italian', text_clean));"
+            text("CREATE INDEX IF NOT EXISTS idx_nodes_text_clean ON nodes USING GIN (to_tsvector('italian', text_clean));")
         )
         session.commit()
         logger.info("fts_ready")
@@ -301,6 +322,65 @@ def _normalize_candidate(candidate: ConflictCandidate) -> ConflictCandidate:
         valid_to_b=candidate.valid_to_a,
         severity=candidate.severity,
     )
+
+
+def _map_akoma_output(doc: DocumentOut) -> dict:
+    doc_type, number, year = _parse_akoma_urn(doc.urn)
+    canonical_doc = canonical_doc_id(doc_type, number, year)
+    nodes: list[dict] = []
+    for node in doc.nodes:
+        canonical_path = node.canonical_path
+        node_type = canonical_path.split("/")[-1].split(":")[0]
+        text_raw = node.text_content
+        text_cleaned = clean_text(text_raw)
+        nodes.append(
+            {
+                "node_type": node_type,
+                "label": canonical_path.split("/")[-1],
+                "canonical_path": canonical_path,
+                "hierarchy_string": canonical_path.replace("/", " > "),
+                "sort_key": build_sort_key(canonical_path),
+                "heading": None,
+                "text_raw": text_raw,
+                "text_clean": text_cleaned,
+                "text_hash": sha256_text(text_cleaned),
+                "metadata_json": {
+                    "references": [ref.model_dump() for ref in node.references],
+                },
+            }
+        )
+    return {
+        "doc": {
+            "canonical_doc": canonical_doc,
+            "doc_type": doc_type,
+            "number": int(number) if number and str(number).isdigit() else None,
+            "year": int(year) if year and str(year).isdigit() else None,
+            "title": None,
+            "valid_from": None,
+            "valid_to": None,
+            "version_tag": doc.version_date,
+        },
+        "nodes": nodes,
+    }
+
+
+def _parse_akoma_urn(urn: str | None) -> tuple[str, str | None, str | None]:
+    if not urn:
+        return "altro", None, None
+    match = re.search(r"([a-z-]+):(\d{4})-\d{2}-\d{2};(\d+)", urn)
+    if not match:
+        match = re.search(r"([a-z-]+):(\d{4});(\d+)", urn)
+    if not match:
+        return "altro", None, None
+    doc_type, year, number = match.groups()
+    return doc_type, number, year
+
+
+def _detect_root_tag(path: Path) -> str:
+    context = etree.iterparse(str(path), events=("start",), recover=True, huge_tree=True)
+    for _event, elem in context:
+        return elem.tag.lower()
+    return ""
 
 
 def cmd_serve() -> None:
