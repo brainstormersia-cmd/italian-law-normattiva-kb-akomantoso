@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: normattiva
+      POSTGRES_USER: normattiva
+      POSTGRES_PASSWORD: normattiva
+    ports:
+      - "5432:5432"
+    # Aggiungiamo un check per assicurarci che il DB sia pronto prima dell'app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U normattiva"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql+psycopg://normattiva:normattiva@db:5432/normattiva
+      - INPUT_DIR=/app/xml_input
+      - PYTHONPATH=/app
+    ports:
+      - "8000:8000"  # <--- Questa riga apre la porta per localhost:8000
+    volumes:
+      - ./:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    # Comando pulito: migra il database e poi avvia il server API
+    command: >
+      bash -c "alembic upgrade head && python -m app.cli serve"
