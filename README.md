@@ -91,3 +91,78 @@ normattiva_cache/
 pgdata/
 *.jsonl
 *.log
+
+### 2️⃣ Lo Script di Export: `scripts/export_dataset.py`
+
+Invece di toccare il `cli.py` che funziona, creiamo questo file nuovo.
+**Crea una cartella `scripts` nella root e dentro metti questo file `export_dataset.py`:**
+
+Questo script contiene tutta la logica "Polished" (pulizia titoli, regex per la gerarchia) che abbiamo testato nel one-liner.
+
+```python
+import json
+import re
+import sys
+import os
+
+# Aggiungiamo la root al path per importare 'app'
+sys.path.append(os.getcwd())
+
+from app.db.session import SessionLocal
+from app.db.models import Node, Document
+
+OUTPUT_FILE = "/app/conoscenza_pronta.jsonl"
+
+def clean_hierarchy(h_str):
+    """Pulisce la gerarchia dai tecnicismi XML"""
+    if not h_str: return ''
+    # Rimuove prefissi comuni
+    h_str = h_str.replace('body > ', '').replace('main > ', '')
+    # Regex per rimuovere art_, para_, chp_, akoma...
+    h_str = re.sub(r'(akoma[a-zA-Z]* >|art_|para_|chp_|point_|__)', '', h_str)
+    # Pulizia spazi e punteggiatura finale
+    h_str = h_str.replace(' .', '.').strip()
+    return h_str
+
+def main():
+    session = SessionLocal()
+    total_nodes = session.query(Node).count()
+    print(f"📦 INIZIO EXPORT DI {total_nodes} NODI...")
+    
+    nodes_iter = session.query(Node).yield_per(2000)
+    count = 0
+    
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        for n in nodes_iter:
+            doc = session.get(Document, n.doc_id)
+            
+            # Recupero Titolo Pulito
+            if doc and doc.title and len(doc.title) > 3:
+                source_name = doc.title.strip().replace("_", " ")
+            elif doc:
+                source_name = doc.canonical_doc
+            else:
+                source_name = "Documento Sconosciuto"
+
+            # Costruzione Oggetto RAG
+            obj = {
+                "id": n.node_id,
+                "source": source_name,
+                "source_id": doc.canonical_doc if doc else "",
+                "context": clean_hierarchy(n.hierarchy_string),
+                "text": n.text_clean,
+                "url": n.source_url or ""
+            }
+            
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            count += 1
+            
+            if count % 10000 == 0:
+                print(f"   ...elaborati {count} nodi...", flush=True)
+
+    print(f"✅ EXPORT COMPLETATO CON SUCCESSO.")
+    print(f"📄 File salvato in: {OUTPUT_FILE}")
+    print(f"📊 Totale righe: {count}")
+
+if __name__ == "__main__":
+    main()

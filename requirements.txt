@@ -1,12 +1,73 @@
+# =============================================================================
+# CORE ML STACK (GPU-optimized)
+# =============================================================================
+# NumPy compatibility (MUST be first)
+numpy<2.0.0
+
+# PyTorch con CUDA (installato via Dockerfile per controllo versione CUDA)
+# torch>=2.4.0  # Commentato perché gestito nel Dockerfile
+
+# Sentence Transformers e dipendenze ML
+sentence-transformers>=2.3.0
+transformers>=4.30.0
+huggingface-hub>=0.20.0
+
+# Vector Database
+chromadb>=0.4.22
+
+# Progress bars
+tqdm>=4.66
+
+# =============================================================================
+# DATABASE & ORM
+# =============================================================================
 sqlalchemy>=2.0
 alembic>=1.13
 psycopg[binary]>=3.1
+
+# =============================================================================
+# WEB FRAMEWORK
+# =============================================================================
 fastapi>=0.110
 uvicorn>=0.27
-lxml>=5.1
 pydantic>=2.6
-structlog>=24.1
-python-dotenv>=1.0
-pytest>=8.0
-loguru>=0.7
+python-multipart>=0.0.9  # Per file upload
+
+# =============================================================================
+# XML PARSING & TEXT PROCESSING
+# =============================================================================
+lxml>=5.1
 diff-match-patch>=20230430
+
+# =============================================================================
+# LOGGING & MONITORING
+# =============================================================================
+structlog>=24.1
+loguru>=0.7
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+python-dotenv>=1.0
+
+# =============================================================================
+# TESTING
+# =============================================================================
+pytest>=8.0
+pytest-asyncio>=0.23.0  # Per test async
+httpx>=0.27.0  # Per test FastAPI
+
+# =============================================================================
+# PERFORMANCE OPTIMIZATIONS (Optional but recommended)
+# =============================================================================
+# Accelerazione tokenization
+tokenizers>=0.15.0
+
+# Gestione memoria migliorata
+psutil>=5.9.0
+
+# JSON veloce
+orjson>=3.9.0
+
+# Caching per embeddings
+diskcache>=5.6.0

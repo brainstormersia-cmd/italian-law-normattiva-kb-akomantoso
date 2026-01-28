@@ -3,32 +3,83 @@ version: "3.9"
 services:
   db:
     image: postgres:15
+    container_name: normattiva_db
     environment:
       POSTGRES_DB: normattiva
       POSTGRES_USER: normattiva
       POSTGRES_PASSWORD: normattiva
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     ports:
       - "5432:5432"
-    # Aggiungiamo un check per assicurarci che il DB sia pronto prima dell'app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U normattiva"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   app:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: normattiva_app
     environment:
+      # Database
       - DATABASE_URL=postgresql+psycopg://normattiva:normattiva@db:5432/normattiva
+      
+      # Paths
       - INPUT_DIR=/app/xml_input
       - PYTHONPATH=/app
+      
+      # GPU/CPU Optimization
+      - PYTORCH_ALLOC_CONF=expandable_segments:True
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - CUDA_VISIBLE_DEVICES=0
+      - TOKENIZERS_PARALLELISM=false
+      
+      # CUDA Memory Management
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      
+      # Logging
+      - LOG_LEVEL=INFO
+      
     ports:
-      - "8000:8000"  # <--- Questa riga apre la porta per localhost:8000
+      - "8000:8000"
+    
     volumes:
       - ./:/app
+      - chroma_db:/app/chroma_db
+      - ./logs:/app/logs
+      - /tmp:/tmp
+    
     depends_on:
       db:
         condition: service_healthy
-    # Comando pulito: migra il database e poi avvia il server API
+    
+    # GPU Configuration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Memory Limits
+    mem_limit: 12g
+    memswap_limit: 12g
+    shm_size: 2g
+    
+    restart: unless-stopped
+
     command: >
       bash -c "alembic upgrade head && python -m app.cli serve"
+
+volumes:
+  postgres_data:
+    driver: local
+  chroma_db:
+    driver: local
